@@ -24,6 +24,14 @@ enum TranscriptionState: Equatable {
         }
     }
 
+    /// New state for a model-load progress update. Ignores updates once loading is
+    /// finished, so a late progress(1.0) callback can't clobber `.ready` (which would
+    /// leave the app stuck "Downloading model (100%)" and unable to record).
+    func applyingLoadingProgress(_ progress: Double) -> TranscriptionState {
+        if case .loading = self { return .loading(progress: progress) }
+        return self
+    }
+
     static func == (lhs: TranscriptionState, rhs: TranscriptionState) -> Bool {
         switch (lhs, rhs) {
         case (.idle, .idle), (.ready, .ready), (.recording, .recording),

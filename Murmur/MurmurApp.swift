@@ -271,7 +271,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, Observable {
         do {
             try await transcriptionEngine.loadModel { progress in
                 Task { @MainActor [weak self] in
-                    self?.appState.state = .loading(progress: progress)
+                    guard let self else { return }
+                    // applyingLoadingProgress ignores late callbacks once we've left
+                    // .loading — a final progress(1.0) delivered after we set .ready
+                    // below must not clobber it back to "Downloading model (100%)".
+                    self.appState.state = self.appState.state.applyingLoadingProgress(progress)
                     NSLog("[Murmur] Model download: \(Int(progress * 100))%")
                 }
             }
