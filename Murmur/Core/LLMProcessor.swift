@@ -14,10 +14,12 @@ final class LLMProcessor {
     private var session: ChatSession?
     #endif
 
-    static let defaultModelID = "mlx-community/Qwen3-1.7B-4bit"
+    static let defaultModelID = "mlx-community/Qwen3.5-0.8B-4bit"
 
-    /// Custom dictionary terms to include in prompts
+    /// Custom dictionary terms to include in prompts (safe entries — always replace)
     var dictionaryTerms: [DictionaryEntry] = []
+    /// Contextual dictionary entries that need LLM judgment (pre-filtered to relevant ones)
+    var contextualDictionaryEntries: [DictionaryEntry] = []
 
     var isAvailable: Bool {
         #if canImport(MLXLLM)
@@ -70,8 +72,8 @@ final class LLMProcessor {
                 generateParameters: GenerateParameters(temperature: 0.0)
             )
 
-            // Use /no_think prefix to disable Qwen3 chain-of-thought for fast direct output
-            let result = try await session.respond(to: "/no_think\n" + text)
+            // Append /no_think to disable chain-of-thought for fast direct output
+            let result = try await session.respond(to: text + " /no_think")
             let cleaned = stripLLMArtefacts(result)
             NSLog("[Murmur] LLM cleaned: '\(text)' → '\(cleaned)'")
 
@@ -133,13 +135,40 @@ final class LLMProcessor {
             break
         }
 
-        // Include custom dictionary terms
+        // Include safe dictionary terms (always replace)
         if !dictionaryTerms.isEmpty {
             let terms = dictionaryTerms.map { "\"\($0.spoken)\" → \"\($0.replacement)\"" }.joined(separator: ", ")
             prompt += "\n\nThe following terms have specific spellings that must be used: \(terms)"
         }
 
+        // Include contextual dictionary entries (LLM decides based on context)
+        if !contextualDictionaryEntries.isEmpty {
+            prompt += buildDictionaryPromptSection(contextualDictionaryEntries)
+        }
+
         return prompt
+    }
+
+    /// Build the contextual dictionary prompt section with table format and dynamic examples.
+    private func buildDictionaryPromptSection(_ entries: [DictionaryEntry]) -> String {
+        var section = "\n\nCUSTOM VOCABULARY:\nApply replacements ONLY when context matches. Leave unchanged if the word is used in its normal English meaning.\n\n"
+        section += "| Heard as | Replace with | Context |\n"
+        section += "|----------|-------------|--------|\n"
+        for entry in entries {
+            let ctx = entry.context.isEmpty ? "Custom term" : entry.context
+            section += "| \"\(entry.spoken)\" | \"\(entry.replacement)\" | \(ctx) |\n"
+        }
+
+        // Generate dynamic few-shot examples from the first 2-3 entries
+        let examples = Array(entries.prefix(3))
+        for entry in examples {
+            let spoken = entry.spoken.lowercased()
+            let ctx = entry.context.isEmpty ? "a custom term" : entry.context.lowercased()
+            section += "\nExample: \"hey \(spoken) can you send me that file\" → \"Hey \(entry.replacement), can you send me that file.\""
+            section += "\nExample: \"the \(spoken) is really nice\" → \"The \(spoken) is really nice.\""
+        }
+
+        return section
     }
 
     // MARK: - Output Filtering
@@ -162,8 +191,8 @@ final class LLMProcessor {
             options: .regularExpression
         )
 
-        // Strip common end tokens
-        let endTokens = ["<|im_end|>", "</s>", "[end of text]", "<|endoftext|>", "<|eot_id|>"]
+        // Strip common end tokens and prefixes
+        let endTokens = ["<|im_end|>", "</s>", "[end of text]", "<|endoftext|>", "<|eot_id|>", "/no_think", "no_think"]
         for token in endTokens {
             result = result.replacingOccurrences(of: token, with: "")
         }

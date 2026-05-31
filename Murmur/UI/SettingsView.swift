@@ -192,6 +192,15 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // Warning when contextual entries exist but LLM is disabled
+            if !config.llmEnabled && config.dictionaryEntries.contains(where: { !$0.isSafe }) {
+                Section {
+                    Label("Context-aware entries require LLM to be enabled. They will fall back to simple replacement.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
             Section("Custom Terms") {
                 if config.dictionaryEntries.isEmpty {
                     Text("No custom terms added yet.")
@@ -199,25 +208,48 @@ struct SettingsView: View {
                         .foregroundStyle(.tertiary)
                 } else {
                     ForEach($config.dictionaryEntries) { $entry in
-                        HStack(spacing: 8) {
-                            TextField("Spoken", text: $entry.spoken)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(maxWidth: .infinity)
-                            Image(systemName: "arrow.right")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                            TextField("Replacement", text: $entry.replacement)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(maxWidth: .infinity)
-                            Button {
-                                config.dictionaryEntries.removeAll { $0.id == entry.id }
-                                config.save()
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                                    .foregroundStyle(.red.opacity(0.7))
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                TextField("Spoken", text: $entry.spoken)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: .infinity)
+                                    .onChange(of: entry.spoken) { _, _ in
+                                        CustomDictionary.autoClassify(&entry)
+                                    }
+                                Image(systemName: "arrow.right")
+                                    .foregroundStyle(.secondary)
+                                    .font(.caption)
+                                TextField("Replacement", text: $entry.replacement)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: .infinity)
+                                // Safe/contextual indicator
+                                Button {
+                                    entry.isSafe.toggle()
+                                    entry.safeOverridden = true
+                                } label: {
+                                    Image(systemName: entry.isSafe ? "bolt.fill" : "brain.head.profile")
+                                        .foregroundStyle(entry.isSafe ? .green : .orange)
+                                        .font(.caption)
+                                        .help(entry.isSafe ? "Safe: always replaced via text matching" : "Contextual: LLM decides based on context")
+                                }
+                                .buttonStyle(.plain)
+                                Button {
+                                    config.dictionaryEntries.removeAll { $0.id == entry.id }
+                                    config.save()
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .foregroundStyle(.red.opacity(0.7))
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
+                            HStack(spacing: 8) {
+                                TextField("Description (e.g. \"a person's name\")", text: $entry.context)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .padding(.vertical, 2)
                     }
                 }
 

@@ -525,8 +525,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, Observable {
             return
         }
 
-        // Apply custom dictionary replacements
-        var text = CustomDictionary.apply(entries: config.dictionaryEntries, to: rawText)
+        // Partition dictionary entries: safe (regex) vs contextual (LLM)
+        let (safeEntries, contextualEntries) = CustomDictionary.partition(config.dictionaryEntries)
+
+        // Apply safe dictionary replacements via regex
+        var text = CustomDictionary.apply(entries: safeEntries, to: rawText)
 
         // Post-process text with context
         let processor = TextPostProcessor(
@@ -539,9 +542,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, Observable {
         // Optional LLM cleanup
         if config.llmEnabled && llmProcessor.isReady {
             appState.state = .transcribing
-            // Pass dictionary terms to LLM for context
-            llmProcessor.dictionaryTerms = config.dictionaryEntries
+            // Pass safe dictionary terms for guaranteed replacement
+            llmProcessor.dictionaryTerms = safeEntries
+            // Pre-filter contextual entries: only include those whose spoken form appears in the text
+            let relevant = CustomDictionary.relevantContextualEntries(from: contextualEntries, in: processed)
+            llmProcessor.contextualDictionaryEntries = relevant
+            if !relevant.isEmpty {
+                NSLog("[Murmur] \(relevant.count) contextual dictionary entries injected into LLM prompt")
+            }
+            let llmStart = CFAbsoluteTimeGetCurrent()
             processed = await llmProcessor.process(text: processed, context: context)
+            let llmElapsed = (CFAbsoluteTimeGetCurrent() - llmStart) * 1000
+            NSLog("[Murmur] LLM processing took %.0fms", llmElapsed)
+            // Write timing to file for debugging
+            let logLine = "\(Date()): LLM took \(Int(llmElapsed))ms for \(processed.count) chars\n"
+            if let data = logLine.data(using: .utf8) {
+                let logPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Murmur/llm_timing.log")
+                if FileManager.default.fileExists(atPath: logPath.path) {
+                    if let handle = try? FileHandle(forWritingTo: logPath) {
+                        handle.seekToEndOfFile()
+                        handle.write(data)
+                        handle.closeFile()
+                    }
+                } else {
+                    try? data.write(to: logPath)
+                }
+            }
+        } else if !contextualEntries.isEmpty {
+            // LLM disabled — fall back to regex for all entries (preserves current behavior)
+            processed = CustomDictionary.apply(entries: contextualEntries, to: processed)
         }
 
         NSLog("[Murmur] Final text: \(processed)")
