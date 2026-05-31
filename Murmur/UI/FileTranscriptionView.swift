@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct FileTranscriptionView: View {
-    var transcriptionEngine: TranscriptionEngine?
+    var transcriptionEngine: TranscriptionEngineProtocol?
     @State private var result: FileTranscriptionResult?
     @State private var isTranscribing = false
     @State private var progress: Double = 0
@@ -177,11 +177,11 @@ struct FileTranscriptionView: View {
                 let config = MurmurConfig.load()
 
                 // Reuse the app's engine if available, otherwise create a new one
-                let engine: TranscriptionEngine
+                let engine: TranscriptionEngineProtocol
                 if let shared = transcriptionEngine, shared.isModelLoaded {
                     engine = shared
                 } else {
-                    engine = TranscriptionEngine(modelName: config.modelName)
+                    engine = WhisperKitEngine(modelName: config.modelName)
                     try await engine.loadModel { p in
                         Task { @MainActor in progress = p * 0.3 }
                     }

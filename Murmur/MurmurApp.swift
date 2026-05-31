@@ -29,7 +29,7 @@ struct MurmurApp: App {
         .defaultPosition(.center)
 
         Window("Transcribe File", id: "file-transcription") {
-            FileTranscriptionView(transcriptionEngine: appDelegate.transcriptionEngine as? TranscriptionEngine)
+            FileTranscriptionView(transcriptionEngine: appDelegate.transcriptionEngine)
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)

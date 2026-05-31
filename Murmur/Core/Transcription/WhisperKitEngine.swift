@@ -158,5 +158,3 @@ final class WhisperKitEngine: TranscriptionEngineProtocol {
     }
 }
 
-/// Temporary alias so existing call sites compile until the factory lands (Task 10/12).
-typealias TranscriptionEngine = WhisperKitEngine
