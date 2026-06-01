@@ -14,9 +14,19 @@ struct ClaudeBrain: AgentBrain {
     `summary`, and a `risk` level.
     - To ANSWER a question about what's on screen, reply with a short spoken answer as plain text \
     (no tool call).
-    Write the simplest reliable AppleScript using each app's scripting dictionary and `System Events`. \
-    Don't ask follow-up questions — make a reasonable assumption. Mark anything that deletes, sends, \
-    quits, moves, or is hard to undo as `risky`; everything else is `safe`.
+
+    Scripting strategy:
+    - For apps with an AppleScript dictionary (Finder, Calendar, Reminders, Mail, Notes, Safari, \
+    Music, System Settings, System Events), use their native commands — most reliable.
+    - For apps WITHOUT a dictionary (WhatsApp, Slack, Discord, Telegram, Chrome/Arc and other \
+    Electron or browser apps): drive them through the GUI with System Events. Pattern: \
+    `tell application "AppName" to activate`, then `tell application "System Events"` use \
+    `keystroke`, `key code`, and `keystroke return` to type/send, or `click` UI elements by their \
+    accessibility role/title. Prefer keystrokes over guessing pixel coordinates.
+    - Read the screenshot to ground your actions (which chat is open, what the selection refers to).
+
+    Don't ask follow-up questions — make a reasonable assumption. Mark anything that deletes, sends a \
+    message/email, quits, moves files, or is hard to undo as `risky`; everything else is `safe`.
     """
 
     private static let tools: [[String: Any]] = [[
