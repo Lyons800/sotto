@@ -109,11 +109,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, Observable {
     let updateManager = UpdateManager()
     let mediaController = MediaController()
 
-    // Murmur Pro: voice-edit + the Dynamic Island surface.
+    // Murmur Pro: Command Mode agent + the Dynamic Island surface.
     let island = IslandController()
     lazy var voiceEditService = VoiceEditService(selection: textInserter, rewriter: llmProcessor)
     private var isCommandHold = false
-    private var lastEditBefore: String?
+    private var pendingScreenshot: Task<Data?, Never>?
+    private var pendingFrontApp: String?
+    private var pendingSelection: String?
 
     var menuBarIcon: String = "waveform"
     private var streamingTask: Task<Void, Error>?
@@ -339,11 +341,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, Observable {
             Task { @MainActor in self?.startCommand() }
         }
         hotkeyManager.onCommandStop = { [weak self] in
-            Task { @MainActor in await self?.stopCommandAndEdit() }
+            Task { @MainActor in await self?.stopCommandAndRun() }
         }
-        island.onUndo = { [weak self] in
-            Task { @MainActor in await self?.applyUndo() }
-        }
+        island.onCancel = { [weak self] in self?.island.dismiss() }
 
         hotkeyManager.start()
     }
@@ -360,6 +360,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, Observable {
             island.message("Microphone access required.")
             return
         }
+        // Freeze the screen context at the moment of invocation.
+        pendingFrontApp = NSWorkspace.shared.frontmostApplication?.localizedName
+        pendingSelection = textInserter.readSelectedText()
+        pendingScreenshot = Task { await ScreenCapture.capturePNG() }
         do {
             try audioRecorder.startRecording { [weak self] level in
                 Task { @MainActor in self?.island.updateLevel(level) }
@@ -373,7 +377,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, Observable {
         }
     }
 
-    private func stopCommandAndEdit() async {
+    private func stopCommandAndRun() async {
         guard isCommandHold else { return }
         isCommandHold = false
 
@@ -387,49 +391,66 @@ class AppDelegate: NSObject, NSApplicationDelegate, Observable {
             return
         }
 
-        // Transcribe the spoken instruction (e.g. "make this more formal").
+        // Transcribe the spoken command (e.g. "add this to my calendar").
         let config = MurmurConfig.load()
         let trimmed = Self.trimTrailingSilence(samples, threshold: 0.005, minTrailingSamples: 8000)
-        let instruction: String
+        let command: String
         do {
             let result = try await transcriptionEngine.transcribe(
                 audioSamples: trimmed, language: config.language, promptText: nil
             )
-            instruction = Self.stripSpecialTokens(result.text).trimmingCharacters(in: .whitespacesAndNewlines)
+            command = Self.stripSpecialTokens(result.text).trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             island.message("Didn't catch that.")
             setReadyAndApplyPendingReload()
             return
         }
-
-        guard !instruction.isEmpty, !isHallucination(instruction) else {
+        guard !command.isEmpty, !isHallucination(command) else {
             island.dismiss()
             setReadyAndApplyPendingReload()
             return
         }
 
-        // Voice-edit needs the on-device LLM; load it on first use.
-        if !llmProcessor.isReady {
-            try? await llmProcessor.loadModel()
-        }
-
+        // Hand the command + screenshot + context to the agent brain.
+        let png = await pendingScreenshot?.value
+        let context = AgentContext(command: command, screenshotPNG: png,
+                                   frontmostApp: pendingFrontApp, selection: pendingSelection)
+        let brain = AgentBrainFactory.make(provider: config.commandBrainProvider)
         do {
-            let edit = try await voiceEditService.prepareEdit(instruction: instruction)
-            lastEditBefore = edit.before
-            await textInserter.insert(edit.after)
-            island.showResult(instruction: instruction, before: edit.before, after: edit.after)
-        } catch let e as VoiceEditError {
-            island.message(e.errorDescription ?? "Edit failed.")
+            let decision = try await brain.decide(context)
+            await handleResolved(CommandModeService.resolve(decision))
+        } catch let e as AgentError {
+            island.message(e.errorDescription ?? "Command failed.")
         } catch {
-            island.message("Edit failed.")
+            island.message("Command failed: \(error.localizedDescription)")
         }
         setReadyAndApplyPendingReload()
     }
 
-    private func applyUndo() async {
-        guard let before = lastEditBefore else { return }
-        await textInserter.insert(before)
-        lastEditBefore = nil
+    private func handleResolved(_ resolved: ResolvedCommand) async {
+        switch resolved {
+        case .answer(let text):
+            island.answer(text)
+        case .nothing:
+            island.message("I couldn't do that one.")
+        case .run(let action):
+            await execute(action)
+        case .confirm(let action):
+            island.onRun = { [weak self] in
+                Task { @MainActor in await self?.execute(action) }
+            }
+            island.confirm(summary: action.summary)
+        }
+    }
+
+    private func execute(_ action: CommandAction) async {
+        let result = await AppleScriptRunner.run(action.appleScript)
+        if result.succeeded {
+            island.done(action.summary)
+        } else {
+            NSLog("[Murmur] Command failed: \(result.error ?? "")")
+            island.message("That didn't work: \(result.error ?? "unknown error")")
+        }
     }
 
     // MARK: - Recording

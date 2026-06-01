@@ -5,6 +5,7 @@ import Carbon.HIToolbox
 struct SettingsView: View {
     @State private var config = MurmurConfig.load()
     @State private var showingHotkeyCapture = false
+    @State private var apiKey = Keychain.get(Keychain.anthropicKeyAccount) ?? ""
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -20,8 +21,12 @@ struct SettingsView: View {
 
             featuresTab
                 .tabItem { Label("Features", systemImage: "sparkles") }
+
+            commandTab
+                .tabItem { Label("Command", systemImage: "wand.and.stars") }
         }
         .frame(width: 480, height: 420)
+        .onChange(of: config.commandBrainProvider) { _, _ in config.save() }
         .onChange(of: config.playSounds) { _, _ in config.save() }
         .onChange(of: config.autoCapitalize) { _, _ in config.save() }
         .onChange(of: config.convertPunctuation) { _, _ in config.save() }
@@ -39,6 +44,41 @@ struct SettingsView: View {
             config.save()
             setLaunchAtLogin(newValue)
         }
+    }
+
+    // MARK: - Command Mode (Pro)
+
+    private var commandTab: some View {
+        Form {
+            Section("Command Mode") {
+                Picker("Brain", selection: $config.commandBrainProvider) {
+                    ForEach(BrainProvider.allCases, id: \.self) { provider in
+                        Text(provider.label).tag(provider)
+                    }
+                }
+                switch config.commandBrainProvider {
+                case .byok:
+                    SecureField("Anthropic API key (sk-ant-…)", text: $apiKey)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: apiKey) { _, newValue in
+                            Keychain.set(newValue.isEmpty ? nil : newValue, for: Keychain.anthropicKeyAccount)
+                        }
+                    Text("Stored in your macOS Keychain. Used only to call Claude directly from your Mac — Murmur never sees it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                case .managed:
+                    Text("Murmur Pro managed cloud is coming soon — use your own API key for now.")
+                        .font(.caption).foregroundStyle(.secondary)
+                case .local:
+                    Text("The on-device agent is coming soon — use your own API key for now.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Section {
+                Text("Hold ⇧ + your dictation key, then speak: “turn the volume down”, “add this to my calendar”, “what does this error mean?”. Murmur sees your screen and acts. Risky actions ask before running.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding()
     }
 
     // MARK: - General

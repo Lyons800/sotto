@@ -25,6 +25,7 @@ struct MurmurConfig: Codable {
     var smartModes: [SmartMode] = SmartMode.defaults
     var muteMediaDuringRecording: Bool = false
     var enginePreference: EnginePreference = .automatic
+    var commandBrainProvider: BrainProvider = .byok
 
     static let `default` = MurmurConfig()
 
@@ -82,6 +83,7 @@ extension MurmurConfig {
         smartModes               = try c.decodeIfPresent([SmartMode].self,        forKey: .smartModes)               ?? SmartMode.defaults
         muteMediaDuringRecording = try c.decodeIfPresent(Bool.self,               forKey: .muteMediaDuringRecording) ?? false
         enginePreference         = try c.decodeIfPresent(EnginePreference.self,   forKey: .enginePreference)         ?? .automatic
+        commandBrainProvider     = try c.decodeIfPresent(BrainProvider.self,      forKey: .commandBrainProvider)     ?? .byok
     }
 }
 

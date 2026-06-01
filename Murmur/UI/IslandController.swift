@@ -11,7 +11,10 @@ final class IslandModel {
         case hidden
         case listening
         case thinking
-        case result(instruction: String, before: String, after: String)
+        case confirm(summary: String)                                   // risky action — ask first
+        case answer(String)                                             // spoken answer
+        case done(String)                                               // "did X ✓"
+        case result(instruction: String, before: String, after: String) // voice-edit before→after
         case message(String)
     }
     var phase: Phase = .hidden
@@ -28,10 +31,15 @@ final class IslandController {
     private var panel: NSPanel?
     let model = IslandModel()
     var onUndo: (() -> Void)?
+    var onRun: (() -> Void)?
+    var onCancel: (() -> Void)?
     private var dismissTask: Task<Void, Never>?
 
     func listening() { model.phase = .listening; present() }
     func thinking() { model.phase = .thinking; present() }
+    func confirm(summary: String) { dismissTask?.cancel(); model.phase = .confirm(summary: summary); present() }
+    func answer(_ text: String) { model.phase = .answer(text); present(); scheduleDismiss(after: 8) }
+    func done(_ text: String) { model.phase = .done(text); present(); scheduleDismiss(after: 4) }
 
     func showResult(instruction: String, before: String, after: String) {
         model.phase = .result(instruction: instruction, before: before, after: after)
@@ -107,10 +115,12 @@ final class IslandController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
 
-        let view = IslandView(model: model, onUndo: { [weak self] in
-            self?.onUndo?()
-            self?.dismiss()
-        })
+        let view = IslandView(
+            model: model,
+            onUndo: { [weak self] in self?.onUndo?(); self?.dismiss() },
+            onRun: { [weak self] in self?.onRun?() },
+            onCancel: { [weak self] in self?.onCancel?(); self?.dismiss() }
+        )
         panel.contentView = NSHostingView(rootView: view)
         self.panel = panel
     }
@@ -123,6 +133,8 @@ private let signal = Color(red: 1.0, green: 0.48, blue: 0.16)
 struct IslandView: View {
     let model: IslandModel
     let onUndo: () -> Void
+    let onRun: () -> Void
+    let onCancel: () -> Void
 
     var body: some View {
         VStack {
@@ -155,6 +167,20 @@ struct IslandView: View {
             HStack(spacing: 12) {
                 ProgressView().scaleEffect(0.6).tint(signal)
                 Text("Working…").foregroundStyle(.white.opacity(0.85))
+            }
+            .font(.system(size: 14, weight: .medium))
+        case let .confirm(summary):
+            confirmView(summary: summary)
+        case let .answer(text):
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "sparkles").foregroundStyle(signal).font(.system(size: 12))
+                Text(text).foregroundStyle(.white.opacity(0.95)).lineLimit(5)
+            }
+            .font(.system(size: 14, weight: .medium))
+        case let .done(text):
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(signal)
+                Text(text).foregroundStyle(.white.opacity(0.95)).lineLimit(2)
             }
             .font(.system(size: 14, weight: .medium))
         case let .result(instruction, before, after):
@@ -195,6 +221,35 @@ struct IslandView: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.white)
                 .lineLimit(3)
+        }
+    }
+
+    private func confirmView(summary: String) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("ABOUT TO")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(signal.opacity(0.9))
+                Text(summary)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Button(action: onCancel) {
+                Text("Cancel")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Capsule().fill(.white.opacity(0.12)))
+            }.buttonStyle(.plain)
+            Button(action: onRun) {
+                Text("Run")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color(red: 0.1, green: 0.06, blue: 0.02))
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .background(Capsule().fill(signal))
+            }.buttonStyle(.plain)
         }
     }
 }
