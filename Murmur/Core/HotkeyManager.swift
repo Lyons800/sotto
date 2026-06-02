@@ -1,10 +1,34 @@
 import AppKit
 import Carbon.HIToolbox
 
+/// C-style callback for the CGEvent tap. Can't capture context, so `self` is passed via
+/// `userInfo` (refcon). The tap is session-level + listen-only, so it sees modifier events
+/// reliably whether Murmur is in the background OR frontmost — unlike NSEvent monitors,
+/// which miss events when the app has focus and drop them intermittently in the background.
+private func hotkeyEventTapCallback(
+    proxy: CGEventTapProxy,
+    type: CGEventType,
+    event: CGEvent,
+    refcon: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    guard let refcon else { return Unmanaged.passUnretained(event) }
+    let manager = Unmanaged<HotkeyManager>.fromOpaque(refcon).takeUnretainedValue()
+
+    // The system disables a tap if its callback is slow or after certain input; re-enable it.
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        manager.reEnableTap()
+        return Unmanaged.passUnretained(event)
+    }
+
+    if let nsEvent = NSEvent(cgEvent: event) {
+        manager.handle(nsEvent, type: type)
+    }
+    return Unmanaged.passUnretained(event) // listen-only: never modify the event
+}
+
 final class HotkeyManager {
-    private var globalMonitor: Any?
-    private var localMonitor: Any?
-    private var flagsMonitor: Any?
+    private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
     private var isModifierKeyDown = false
     private var activeHoldIsCommand = false
 
@@ -19,10 +43,8 @@ final class HotkeyManager {
     private var mode: RecordingMode
     private var isToggled = false
 
-    /// Test hooks (internal; visible via @testable import). A modifier hotkey must
-    /// install BOTH a global and a local monitor, or it dies when Murmur is frontmost.
-    var hasLocalMonitorForTesting: Bool { localMonitor != nil }
-    var hasFlagsMonitorForTesting: Bool { flagsMonitor != nil }
+    /// Test hook (internal; visible via @testable import).
+    var hasEventTapForTesting: Bool { eventTap != nil }
 
     init(keyCode: UInt16 = UInt16(kVK_RightOption), modifiers: UInt = 0, mode: RecordingMode = .hold) {
         self.targetKeyCode = keyCode
@@ -33,54 +55,68 @@ final class HotkeyManager {
     func start() {
         stop()
 
-        // For modifier-only keys (Option, Command, Shift, Control), use flagsChanged
         let isModifierKey = isModifierOnlyKey(targetKeyCode)
+        let mask: CGEventMask = isModifierKey
+            ? (1 << CGEventType.flagsChanged.rawValue)
+            : ((1 << CGEventType.keyDown.rawValue)
+               | (1 << CGEventType.keyUp.rawValue)
+               | (1 << CGEventType.flagsChanged.rawValue)) // flags tracked for the modifier match
 
-        if isModifierKey {
-            flagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-                self?.handleFlagsChanged(event)
-            }
-            // Global monitors do NOT fire while Murmur itself is the frontmost app
-            // (Settings/onboarding/file-transcribe window open, or the menu bar was
-            // just clicked). Without a LOCAL monitor too, the modifier hotkey silently
-            // stops working whenever Murmur has focus — and a press/release missed in
-            // that window leaves `isModifierKeyDown` desynced. The key-code branch below
-            // already pairs global+local for exactly this reason; modifiers need it too.
-            localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-                self?.handleFlagsChanged(event)
-                return event
-            }
-        } else {
-            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
-                self?.handleKeyEvent(event)
-            }
-            localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
-                self?.handleKeyEvent(event)
-                return event
-            }
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .listenOnly,
+            eventsOfInterest: mask,
+            callback: hotkeyEventTapCallback,
+            userInfo: refcon
+        ) else {
+            NSLog("[Murmur] Hotkey event tap could not be created — grant Input Monitoring / Accessibility")
+            return
         }
+
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+
+        self.eventTap = tap
+        self.runLoopSource = source
     }
 
     func stop() {
-        if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
-        if let localMonitor { NSEvent.removeMonitor(localMonitor) }
-        if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
-        globalMonitor = nil
-        localMonitor = nil
-        flagsMonitor = nil
+        if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let source = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        eventTap = nil
+        runLoopSource = nil
         isModifierKeyDown = false
         activeHoldIsCommand = false
         isToggled = false
+    }
+
+    func reEnableTap() {
+        if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
     }
 
     func updateHotkey(keyCode: UInt16, modifiers: UInt = 0, mode: RecordingMode) {
         self.targetKeyCode = keyCode
         self.targetModifiers = modifiers
         self.mode = mode
-        start() // Restart monitors with new config
+        start() // Restart the tap with new config
     }
 
     // MARK: - Event Handling
+
+    /// Routes a tap event (converted to NSEvent) to the right handler.
+    func handle(_ event: NSEvent, type: CGEventType) {
+        switch type {
+        case .flagsChanged:
+            handleFlagsChanged(event)
+        case .keyDown, .keyUp:
+            handleKeyEvent(event)
+        default:
+            break
+        }
+    }
 
     private func handleKeyEvent(_ event: NSEvent) {
         guard event.keyCode == targetKeyCode else { return }

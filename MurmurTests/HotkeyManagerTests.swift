@@ -2,29 +2,25 @@ import XCTest
 import Carbon.HIToolbox
 @testable import Murmur
 
-/// Regression test for the bug where holding the Right Option hotkey "sometimes stops
-/// working when the app is running": the modifier-key path installed only a GLOBAL
-/// event monitor, which never fires while Murmur itself is frontmost. The fix pairs it
-/// with a LOCAL monitor (as the regular-key path already does).
+/// The hotkey is delivered via a session-level CGEvent tap (reliable in background AND
+/// when Murmur is frontmost). Creating the tap needs Input-Monitoring permission, which a
+/// headless test runner doesn't have, so we can't assert the tap is live — but we can
+/// assert start()/stop() don't crash and that stop() fully releases the tap.
 final class HotkeyManagerTests: XCTestCase {
     @MainActor
-    func test_modifierHotkey_installsBothGlobalAndLocalMonitors() {
-        let hm = HotkeyManager(keyCode: UInt16(kVK_RightOption), modifiers: 0, mode: .hold)
-        hm.start()
-        defer { hm.stop() }
-
-        // The local monitor is the fix: without it the hotkey is dead whenever Murmur
-        // is the active app. (We don't assert on the global monitor because
-        // addGlobalMonitorForEvents can return nil in a permission-less test runner.)
-        XCTAssertTrue(hm.hasLocalMonitorForTesting, "local flagsChanged monitor must be installed so the hotkey works when Murmur is frontmost")
-    }
-
-    @MainActor
-    func test_stop_removesMonitors() {
+    func test_startThenStop_releasesTap() {
         let hm = HotkeyManager(keyCode: UInt16(kVK_RightOption), modifiers: 0, mode: .hold)
         hm.start()
         hm.stop()
-        XCTAssertFalse(hm.hasLocalMonitorForTesting)
-        XCTAssertFalse(hm.hasFlagsMonitorForTesting)
+        XCTAssertFalse(hm.hasEventTapForTesting, "stop() must release the event tap")
+    }
+
+    @MainActor
+    func test_doubleStopIsSafe() {
+        let hm = HotkeyManager(keyCode: UInt16(kVK_RightOption), modifiers: 0, mode: .hold)
+        hm.start()
+        hm.stop()
+        hm.stop() // must not crash
+        XCTAssertFalse(hm.hasEventTapForTesting)
     }
 }
