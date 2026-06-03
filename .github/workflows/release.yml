@@ -108,8 +108,13 @@ jobs:
           # Download Sparkle tools
           SPARKLE_VERSION="2.6.4"
           curl -sL "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz" | tar xJ -C /tmp
-          # Generate EdDSA signature
-          SIGNATURE=$(/tmp/bin/sign_update "build/$APP_NAME.dmg" --ed-key-file <(echo "$SPARKLE_EDDSA_PRIVATE_KEY"))
+          # Write the EdDSA key to a real file — sign_update can't read a /dev/fd
+          # process-substitution path (fails with: file "63" couldn't be opened).
+          KEYFILE="$RUNNER_TEMP/sparkle_ed_key"
+          printf '%s' "$SPARKLE_EDDSA_PRIVATE_KEY" > "$KEYFILE"
+          chmod 600 "$KEYFILE"
+          SIGNATURE=$(/tmp/bin/sign_update "build/$APP_NAME.dmg" --ed-key-file "$KEYFILE")
+          rm -f "$KEYFILE"
           echo "SPARKLE_SIGNATURE=$SIGNATURE" >> $GITHUB_ENV
 
       - name: Generate appcast.xml
