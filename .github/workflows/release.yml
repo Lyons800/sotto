@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
 
+# softprops/action-gh-release needs write access to create the release +
+# generate notes; without this the default token is read-only (403).
+permissions:
+  contents: write
+
 env:
   APP_NAME: Sotto      # product/.app/.dmg name (PRODUCT_NAME override)
   SCHEME: Murmur      # internal Xcode scheme/target name (unchanged)
